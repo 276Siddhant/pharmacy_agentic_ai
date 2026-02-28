@@ -1,52 +1,83 @@
 """
 components/chat.py
 ------------------
-Renders the full chat history from st.session_state.messages.
-
-Message structure expected:
-    {
-        "role": "user" | "assistant",
-        "content": "message text",
-        "agent_logs": [                    # only on assistant messages, optional
-            {
-                "agent": "🩺 Pharmacist",
-                "log": "agent result text"
-            }
-        ]
-    }
-
-Rules:
-- Never modifies session_state
-- UI only — no API calls, no logic
+UI-only chat renderer.
+Now supports backend 'trace' field automatically.
 """
 
 import streamlit as st
 
 
-# ── Agent colour map ──────────────────────────────────────────────────────────
+# ── Agent colour map ──────────────────────────────────────────
 AGENT_COLORS = {
-    "🩺 Pharmacist":        "#7C3AED",   # purple
-    "🛡️ Safety":            "#DC2626",   # red
-    "📦 Fulfillment":       "#059669",   # green
+    "🩺 Pharmacist":  "#7C3AED",
+    "🛡️ Safety":      "#DC2626",
+    "📦 Fulfillment": "#059669",
 }
 
-DEFAULT_AGENT_COLOR = "#6B7280"          # grey fallback
+DEFAULT_AGENT_COLOR = "#6B7280"
 
 
-def _agent_color(agent_name: str) -> str:
-    """Return the hex colour for a given agent name."""
-    for key, color in AGENT_COLORS.items():
-        if key in agent_name:
-            return color
-    return DEFAULT_AGENT_COLOR
+# ── Utility: map trace → agent sections ──────────────────────
+def _map_trace_to_agents(trace: list) -> list:
+    """
+    Converts backend trace list into styled agent_logs format.
+    """
+
+    if not trace:
+        return []
+
+    pharmacist_logs = []
+    safety_logs = []
+    fulfillment_logs = []
+    other_logs = []
+
+    for entry in trace:
+        text = str(entry)
+
+        if any(word in text.lower() for word in ["symptom", "recommend", "intent"]):
+            pharmacist_logs.append(text)
+
+        elif any(word in text.lower() for word in ["safety", "prescription", "blocked", "overdose", "emergency"]):
+            safety_logs.append(text)
+
+        elif any(word in text.lower() for word in ["stock", "order", "inventory", "refill"]):
+            fulfillment_logs.append(text)
+
+        else:
+            other_logs.append(text)
+
+    agent_logs = []
+
+    if pharmacist_logs:
+        agent_logs.append({
+            "agent": "🩺 Pharmacist",
+            "log": "\n".join(pharmacist_logs)
+        })
+
+    if safety_logs:
+        agent_logs.append({
+            "agent": "🛡️ Safety",
+            "log": "\n".join(safety_logs)
+        })
+
+    if fulfillment_logs:
+        agent_logs.append({
+            "agent": "📦 Fulfillment",
+            "log": "\n".join(fulfillment_logs)
+        })
+
+    if other_logs:
+        agent_logs.append({
+            "agent": "🤖 System",
+            "log": "\n".join(other_logs)
+        })
+
+    return agent_logs
 
 
-# ── Agent logs block ──────────────────────────────────────────────────────────
+# ── Agent logs renderer ───────────────────────────────────────
 def _render_agent_logs(agent_logs: list) -> None:
-    """
-    Renders collapsed agent-thinking blocks beneath an assistant message.
-    Each agent gets its own styled expander.
-    """
     if not agent_logs:
         return
 
@@ -56,80 +87,51 @@ def _render_agent_logs(agent_logs: list) -> None:
         unsafe_allow_html=True,
     )
 
-    for entry in agent_logs:
-        agent_name = entry.get("agent", "Agent")
-        log_text   = entry.get("log", "No output.")
-        color      = _agent_color(agent_name)
-
-        # Styled expander label with coloured dot
-        label = f"&nbsp; {agent_name}"
-        dot_style = (
-            f"display:inline-block; width:8px; height:8px; border-radius:50%; "
-            f"background:{color}; margin-right:6px; vertical-align:middle;"
-        )
-
-        with st.expander(agent_name, expanded=False):
-            st.markdown(
-                f"""
-                <div style="
-                    background: #1a0a2e;
-                    border-left: 3px solid {color};
-                    border-radius: 6px;
-                    padding: 12px 14px;
-                    font-size: 0.82rem;
-                    line-height: 1.6;
-                    color: #e2e8f0;
-                    white-space: pre-wrap;
-                    word-wrap: break-word;
-                ">
-                {log_text}
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+    
 
 
-# ── Single message renderer ───────────────────────────────────────────────────
+# ── Single message renderer ───────────────────────────────────
 def _render_message(message: dict, index: int) -> None:
-    """
-    Renders one message bubble.
-    - User messages: right-aligned purple bubble
-    - Assistant messages: left-aligned dark bubble + agent logs below
-    """
+
     role       = message.get("role", "user")
     content    = message.get("content", "")
+    trace      = message.get("trace", [])
     agent_logs = message.get("agent_logs", [])
 
+    # If backend trace exists, convert it
+    if trace and not agent_logs:
+        agent_logs = _map_trace_to_agents(trace)
+
     if role == "user":
-     st.markdown(
-        f"""
-        <div style="
-            display: flex;
-            justify-content: flex-end;
-            width: 100%;
-            padding: 4px 0;
-        ">
+        st.markdown(
+            f"""
             <div style="
-                background: linear-gradient(135deg, #7C3AED, #5B21B6);
-                border-radius: 14px 14px 2px 14px;
-                padding: 10px 16px;
-                max-width: 75%;
-                font-size: 0.92rem;
-                line-height: 1.55;
-                color: #ffffff;
-                box-shadow: 0 2px 12px rgba(124,58,237,0.35);
-                word-wrap: break-word;
+                display: flex;
+                justify-content: flex-end;
+                width: 100%;
+                padding: 4px 0;
             ">
-            {content}
+                <div style="
+                    background: linear-gradient(135deg, #7C3AED, #5B21B6);
+                    border-radius: 14px 14px 2px 14px;
+                    padding: 10px 16px;
+                    max-width: 75%;
+                    font-size: 0.92rem;
+                    line-height: 1.55;
+                    color: #ffffff;
+                    box-shadow: 0 2px 12px rgba(124,58,237,0.35);
+                    word-wrap: break-word;
+                ">
+                {content}
+                </div>
             </div>
-        </div>
-        """,
-        unsafe_allow_html=True,
-         )
+            """,
+            unsafe_allow_html=True,
+        )
 
     elif role == "assistant":
         with st.chat_message("assistant"):
-            # Main response text
+
             st.markdown(
                 f"""
                 <div style="
@@ -149,28 +151,17 @@ def _render_message(message: dict, index: int) -> None:
                 unsafe_allow_html=True,
             )
 
-            # Agent logs beneath the response (collapsed by default)
             if agent_logs:
                 st.markdown("<div style='margin-top:6px;'></div>", unsafe_allow_html=True)
                 _render_agent_logs(agent_logs)
 
 
-# ── Main render function ──────────────────────────────────────────────────────
+# ── Main render function ───────────────────────────────────────
 def render_chat_history() -> None:
-    """
-    Public entry point. Call this from app.py to render the full chat.
 
-    Reads from:   st.session_state.messages
-    Modifies:     nothing
-
-    Usage in app.py:
-        from components.chat import render_chat_history
-        render_chat_history()
-    """
     messages: list = st.session_state.get("messages", [])
 
     if not messages:
-        # Fallback — should never hit this if session.py is set up correctly
         st.info("No messages yet. Start chatting below!")
         return
 
@@ -178,18 +169,9 @@ def render_chat_history() -> None:
         _render_message(message, index=i)
 
 
-# ── Streaming assistant message ───────────────────────────────────────────────
+# ── Streaming assistant message ───────────────────────────────
 def render_streaming_response(stream_generator) -> str:
-    """
-    Streams the final assistant response token by token into a chat bubble.
-    Returns the full assembled string once streaming is complete.
 
-    Usage in app.py (after agents finish):
-        full_text = render_streaming_response(api_client.call_final_streamed(user_input))
-    
-    DEMO SAFETY: wrapped in try/except — if the stream breaks mid-way,
-    whatever was collected so far is returned rather than crashing.
-    """
     full_text = ""
 
     try:
@@ -217,7 +199,6 @@ def render_streaming_response(stream_generator) -> str:
                     unsafe_allow_html=True,
                 )
 
-            # Final render — remove the cursor
             placeholder.markdown(
                 f"""
                 <div style="
@@ -238,7 +219,6 @@ def render_streaming_response(stream_generator) -> str:
             )
 
     except Exception as e:
-        # ⚠️ DEMO SAFETY: stream broke — show what we have
         st.warning(f"Stream interrupted: {e}. Partial response captured.")
 
     return full_text

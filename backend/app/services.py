@@ -5,11 +5,14 @@ from sqlalchemy import or_
 from .models import Medicine, Order, RefillAlert
 
 
+
 # =========================
 # IMPORT PRODUCTS
 # =========================
 def import_products_from_excel(db: Session):
-    df = pd.read_excel("data/products-export.xlsx")
+    import os
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    file_path = os.path.join(BASE_DIR, "data", "products-export.xlsx")
 
     for _, row in df.iterrows():
         exists = db.query(Medicine).filter(Medicine.name == row["Medicine Name"]).first()
@@ -37,7 +40,14 @@ DOSAGE_MAP = {
 }
 
 def import_products_from_excel(db: Session):
-    df = pd.read_excel("data/products-export.xlsx")
+    import os
+    BASE_DIR = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    file_path = os.path.join(BASE_DIR, "data", "products-export.xlsx")
+
+
+
+
+    df = pd.read_excel(file_path)
 
     # Clean column names (removes hidden spaces + lowercase)
     df.columns = df.columns.str.strip().str.lower()
@@ -201,35 +211,78 @@ def scan_and_generate_refill_alerts(db: Session):
     db.commit()
     return generated
 
+from sqlalchemy import or_
+from .models import Medicine
+
+
+from sqlalchemy import or_
+from .models import Medicine
+
+
 def recommend_from_symptom(db, symptom):
+
     symptom = symptom.lower()
 
-    symptom_map = {
-        "dry skin": ["urea", "cream", "lotion"],
-        "tired": ["vitamin", "energie", "b12"],
-        "allergy": ["antiallerg", "augentropfen"],
-        "immune": ["vitamin d", "vigantol"],
-        "omega": ["omega"]
+    medicines = db.query(Medicine).all()
+
+    scored = []
+
+    for m in medicines:
+        name = m.name.lower()
+        desc = (m.description or "").lower()
+
+        score = 0
+
+        # Fatigue logic
+        if "tired" in symptom or "fatigue" in symptom:
+            if "b12" in name or "b12" in desc:
+                score += 3
+            if "vitamin" in name or "vitamin" in desc:
+                score += 2
+            if "magnesium" in name or "magnesium" in desc:
+                score += 2
+            if "energy" in name or "energie" in desc:
+                score += 2
+
+        # Generic match
+        if symptom in name or symptom in desc:
+            score += 1
+
+        if score > 0:
+            scored.append((score, m))
+
+    scored.sort(reverse=True, key=lambda x: x[0])
+
+    top = [m for _, m in scored[:5]]
+
+    return [
+    {
+        "id": p.id,
+        "name": p.name,
+        "price": p.price,
+        "stock": p.stock,
+        "reason": generate_reason(symptom, p)
     }
+    for p in top
+]
+def generate_reason(symptom, medicine):
 
-    keywords = []
+    symptom = symptom.lower()
+    name = medicine.name.lower()
+    desc = (medicine.description or "").lower()
 
-    for key in symptom_map:
-        if key in symptom:
-            keywords = symptom_map[key]
-            break
+    if "tired" in symptom or "fatigue" in symptom:
+        if "b12" in name or "b12" in desc:
+            return "Contains Vitamin B12 which helps reduce fatigue and supports energy metabolism."
+        if "vitamin" in name or "vitamin" in desc:
+            return "Multivitamins help combat fatigue and improve overall energy levels."
+        if "magnesium" in name or "magnesium" in desc:
+            return "Magnesium supports muscle function and reduces tiredness."
 
-    if not keywords:
-        return []
+    if symptom in name or symptom in desc:
+        return "Matches your reported symptom."
 
-    results = db.query(Medicine).filter(
-        or_(
-            *[Medicine.name.ilike(f"%{word}%") for word in keywords],
-            *[Medicine.description.ilike(f"%{word}%") for word in keywords]
-        )
-    ).limit(3).all()
-
-    return results
+    return "May help support your condition."
 
 from rapidfuzz import process
 from .models import Medicine

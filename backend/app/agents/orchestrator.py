@@ -6,13 +6,14 @@ from .action_agent import execute_order
 from ..services import recommend_from_symptom, fuzzy_match_medicine
 from ..models import PendingOrder
 
+
 def run_pharmacy_agent(db, user_id, message):
 
     trace = []
 
-    # =====================================
+    # =====================================================
     # 🚨 1️⃣ EMERGENCY DETECTION
-    # =====================================
+    # =====================================================
     RED_FLAGS = [
         "chest pain",
         "breathing difficulty",
@@ -29,9 +30,9 @@ def run_pharmacy_agent(db, user_id, message):
             "trace": ["Emergency mode triggered"]
         }
 
-    # =====================================
-    # 🔁 2️⃣ CONTINUE PENDING ORDER (MULTI-TURN)
-    # =====================================
+    # =====================================================
+    # 🔁 2️⃣ CONTINUE PENDING ORDER (MULTI-TURN SUPPORT)
+    # =====================================================
     pending = db.query(PendingOrder).filter(
         PendingOrder.patient_id == user_id
     ).first()
@@ -39,31 +40,31 @@ def run_pharmacy_agent(db, user_id, message):
     if pending and message.strip().isdigit():
 
         quantity = int(message.strip())
-        medicine_input = pending.medicine_name
+        medicine = pending.medicine_name
 
         trace.append("Continuing pending order")
 
-        # Delete pending state
+        # Clear pending state
         db.delete(pending)
         db.commit()
 
         data = {
             "intent": "order",
-            "medicine": medicine_input,
+            "medicine": medicine,
             "quantity": quantity,
             "dosage_frequency": 1
         }
 
     else:
-        # =====================================
+        # =====================================================
         # 🤖 3️⃣ INTENT DETECTION
-        # =====================================
+        # =====================================================
         data = detect_intent(message)
         trace.append(f"Intent detected: {data}")
 
-    # =====================================
+    # =====================================================
     # 🩺 4️⃣ RECOMMEND FLOW
-    # =====================================
+    # =====================================================
     if data.get("intent") == "recommend":
 
         symptom = data.get("symptom")
@@ -82,108 +83,98 @@ def run_pharmacy_agent(db, user_id, message):
             "trace": trace
         }
 
-    # =====================================
+    # =====================================================
     # 💊 5️⃣ ORDER FLOW
-    # =====================================
+    # =====================================================
     elif data.get("intent") == "order":
-
-        medicine_input = data.get("medicine")
         quantity = data.get("quantity")
-        dosage = data.get("dosage_frequency")
+    dosage = data.get("dosage_frequency") or 1
 
-        trace.append("Order request received")
+    # Use extracted medicine string, not full sentence
+    medicine_input = data.get("medicine")
 
-        # ❓ QUANTITY CLARIFICATION
-        if not quantity:
+    trace.append(f"Medicine extracted from intent: {medicine_input}")
 
-            # Remove existing pending
-            existing = db.query(PendingOrder).filter(
-                PendingOrder.patient_id == user_id
-            ).first()
-
-            if existing:
-                db.delete(existing)
-                db.commit()
-
-            pending = PendingOrder(
-                patient_id=user_id,
-                medicine_name=medicine_input
-            )
-
-            db.add(pending)
-            db.commit()
-
-            return {
-                "message": f"How many units of {medicine_input} would you like?",
-                "trace": ["Pending order saved"]
-            }
-
-        # 🔍 FUZZY MATCH
-        medicine = fuzzy_match_medicine(db, medicine_input)
-
-        if not medicine:
-            return {
-                "message": "Medicine not found. Please check spelling.",
-                "trace": ["Fuzzy match failed"]
-            }
-
-        trace.append(f"Fuzzy matched medicine: {medicine}")
-
-        # 📦 1️⃣ STOCK CHECK
-        inventory = check_inventory(db, medicine, quantity)
-        trace.append(f"Stock check: {inventory}")
-
-        if inventory["status"] != "available":
-            return {
-                "message": "Medicine out of stock or insufficient quantity.",
-                "trace": trace
-            }
-
-        # 🛡️ 2️⃣ SAFETY CHECK (Prescription + Overdose)
-        safety = run_safety_checks(db, user_id, medicine)
-        trace.append(f"Safety check: {safety}")
-
-        if safety["status"] == "blocked":
-
-            if safety["reason"] == "prescription_required":
-                return {
-                    "message": f"{medicine} requires a prescription. Please upload it before ordering.",
-                    "trace": trace
-                }
-
-            if safety["reason"] == "recent_purchase":
-                return {
-                    "message": "You recently purchased this medicine. Please consult a doctor before ordering again.",
-                    "trace": trace
-                }
-
-        # ⚠️ 3️⃣ DOSAGE VALIDATION
-        if not dosage or dosage <= 0:
-            return {
-                "message": "Invalid dosage frequency provided.",
-                "trace": trace
-            }
-
-        if dosage > 5:
-            return {
-                "message": "⚠️ Dosage seems unusually high. Please confirm with a doctor.",
-                "trace": trace
-            }
-
-        # ✅ 4️⃣ EXECUTE ORDER
-        result = execute_order(db, user_id, medicine, quantity, dosage)
-        trace.append("Order successfully executed")
-
+    if not medicine_input:
         return {
-            "message": f"Order placed successfully for {medicine}.",
-            "data": result,
+            "message": "Please specify the medicine name clearly.",
             "trace": trace
         }
 
-    # =====================================
-    # ❌ UNKNOWN INTENT
-    # =====================================
+    # Fuzzy match only the medicine name, NOT full sentence
+    import re
+
+# Remove numbers
+    cleaned = re.sub(r"\b\d+\b", "", medicine_input)
+
+# Remove common filler words
+    STOPWORDS = ["i", "need", "want", "give", "me", "please"]
+    tokens = cleaned.lower().split()
+    filtered = " ".join([t for t in tokens if t not in STOPWORDS])
+
+    trace.append(f"Cleaned medicine input: {filtered}")
+
+    medicine = fuzzy_match_medicine(db, filtered)
+
+    if not medicine:
+        return {
+            "message": "Medicine not found. Please check spelling.",
+            "trace": ["Fuzzy match failed"]
+        }
+
+    trace.append(f"Fuzzy matched medicine: {medicine}")
+
+    # If quantity missing → ask
+    if not quantity:
+
+        existing = db.query(PendingOrder).filter(
+            PendingOrder.patient_id == user_id
+        ).first()
+
+        if existing:
+            db.delete(existing)
+            db.commit()
+
+        pending = PendingOrder(
+            patient_id=user_id,
+            medicine_name=medicine
+        )
+
+        db.add(pending)
+        db.commit()
+
+        return {
+            "message": f"How many units of {medicine} would you like?",
+            "trace": ["Pending order saved"]
+        }
+
+    # Stock check
+    inventory = check_inventory(db, medicine, quantity)
+    trace.append(f"Stock check: {inventory}")
+
+    if inventory["status"] != "available":
+        return {
+            "message": f"{medicine} is out of stock.",
+            "trace": trace
+        }
+
+    # Safety check
+    safety = run_safety_checks(db, user_id, medicine)
+    trace.append(f"Safety check: {safety}")
+
+    if safety["status"] == "blocked":
+        return {
+            "message": safety.get("message", "Order blocked due to safety policy."),
+            "trace": trace
+        }
+
+    # Execute
+    result = execute_order(db, user_id, medicine, quantity, dosage)
+
     return {
-        "message": "I did not understand your request. Please try again.",
+        "message": f"Order placed successfully for {medicine}.",
+        "data": result,
         "trace": trace
     }
+
+    

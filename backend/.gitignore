@@ -1,19 +1,14 @@
-# Environments and Secrets
-backend/.env
-.env
-.venv/
-env/
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Virtual Environment
 venv/
 
-# Python Cache
-__pycache__/
-*.py[cod]
-*$py.class
+# Env
+.env
 
-# Audio and Media
-*.wav
-temp_audio.wav
-
-# OS files
-.DS_Store
-Thumbs.db
+# Database
+pharmacy.db

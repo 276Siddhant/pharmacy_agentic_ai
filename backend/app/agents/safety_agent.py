@@ -1,5 +1,5 @@
-from app.services import check_recent_purchase, check_prescription
-from app.models import Prescription
+from ..services import check_recent_purchase, check_prescription
+from ..models import Prescription
 
 def run_safety_checks(db, user_id, medicine):
 
