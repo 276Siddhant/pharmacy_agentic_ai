@@ -1,25 +1,33 @@
-from fastapi import APIRouter, Depends, Query, UploadFile, File
+from fastapi import APIRouter, Depends, Query, UploadFile, File, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import or_
 from collections import Counter
-from datetime import datetime
+from typing import List
 import os
 
 from .database import get_db
 from .models import Medicine, Order, RefillAlert, Prescription
 from .services import (
     predict_refill,
-    scan_and_generate_refill_alerts
+    scan_and_generate_refill_alerts,
 )
-
-# 🔥 NEW MULTI-AGENT ORCHESTRATOR
 from .agents.orchestrator import run_pharmacy_agent
+from .agents.safety_agent import run_safety_checks
 
+# ✅ ONLY ONE ROUTER
 router = APIRouter()
 
-# ===============================
+# =====================================================
+# 🤖 CHAT (MAIN ENTRY)
+# =====================================================
+@router.post("/chat")
+def chat(user_id: str, message: str, db: Session = Depends(get_db)):
+    return run_pharmacy_agent(db, user_id, message)
+
+
+# =====================================================
 # 🔎 SEARCH MEDICINES
-# ===============================
+# =====================================================
 @router.get("/search")
 def search_medicines(query: str = Query(..., min_length=2), db: Session = Depends(get_db)):
 
@@ -35,61 +43,95 @@ def search_medicines(query: str = Query(..., min_length=2), db: Session = Depend
             "id": med.id,
             "name": med.name,
             "price": med.price,
-            "package_size": med.package_size,
-            "description": med.description
+            "stock": med.stock,
+            "prescription_required": med.prescription_required
         }
         for med in results
     ]
 
 
-# ===============================
-# 🤖 CHAT (MULTI AGENT)
-# ===============================
-@router.post("/chat")
-def chat(user_id: str, message: str, db: Session = Depends(get_db)):
-    return run_pharmacy_agent(db, user_id, message)
+# =====================================================
+# 📦 PRODUCTS (STORE FRONT)
+# =====================================================
+@router.get("/products")
+def get_products(db: Session = Depends(get_db)):
 
-
-# ===============================
-# 📦 ALSO BOUGHT
-# ===============================
-@router.get("/also-bought/{product_name}")
-def also_bought(product_name: str, db: Session = Depends(get_db)):
-
-    patients = db.query(Order.patient_id).filter(
-        Order.product_name.ilike(f"%{product_name}%")
-    ).all()
-
-    patient_ids = [p[0] for p in patients]
-
-    if not patient_ids:
-        return {"message": "No purchase history found for this product."}
-
-    other_orders = db.query(Order.product_name).filter(
-        Order.patient_id.in_(patient_ids),
-        ~Order.product_name.ilike(f"%{product_name}%")
-    ).all()
-
-    product_list = [p[0] for p in other_orders]
-
-    if not product_list:
-        return {"message": "No related products found."}
-
-    product_counts = Counter(product_list)
-    top_products = product_counts.most_common(3)
+    medicines = db.query(Medicine).all()
 
     return [
         {
-            "product_name": name,
-            "times_bought_together": count
+            "id": m.id,
+            "name": m.name,
+            "price": m.price,
+            "stock": m.stock,
+            "prescription_required": m.prescription_required
         }
-        for name, count in top_products
+        for m in medicines
     ]
 
 
-# ===============================
+# =====================================================
+# 📦 FINALIZE CHECKOUT (CONFIRM ORDER)
+# =====================================================
+
+from pydantic import BaseModel
+
+class CartItem(BaseModel):
+    name: str
+    quantity: int
+
+class CheckoutRequest(BaseModel):
+    patient_id: str
+    items: List[CartItem]
+
+@router.post("/finalize-checkout")
+def finalize_checkout(data: CheckoutRequest, db: Session = Depends(get_db)):
+
+    for item in data.items:
+
+        medicine = db.query(Medicine).filter(Medicine.name == item.name).first()
+
+        if not medicine:
+            raise HTTPException(status_code=404, detail=f"{item.name} not found")
+
+        # 1️⃣ Check stock
+        if medicine.stock < item.quantity:
+            raise HTTPException(status_code=400, detail=f"Insufficient stock for {item.name}")
+
+        # 2️⃣ Prescription check
+        if medicine.prescription_required:
+            raise HTTPException(status_code=403, detail=f"{item.name} requires prescription")
+
+        # 3️⃣ Safety check
+        safety = run_safety_checks(db, data.patient_id, medicine.name)
+
+        if safety["status"] == "blocked":
+            raise HTTPException(status_code=403, detail="Safety rule blocked this purchase")
+
+        # 4️⃣ Deduct stock
+        medicine.stock -= item.quantity
+
+        # 5️⃣ Create order record
+        new_order = Order(
+            patient_id=data.patient_id,
+            product_name=medicine.name,
+            quantity=item.quantity,
+            dosage_frequency=1
+        )
+
+        db.add(new_order)
+
+    db.commit()
+
+    return {
+        "status": "success",
+        "message": "Checkout completed safely"
+    }
+
+
+# =====================================================
 # 📊 USER ORDER HISTORY
-# ===============================
+# =====================================================
 @router.get("/user/orders/{user_id}")
 def get_user_orders(user_id: str, db: Session = Depends(get_db)):
 
@@ -97,23 +139,19 @@ def get_user_orders(user_id: str, db: Session = Depends(get_db)):
         Order.patient_id == user_id
     ).order_by(Order.purchase_date.desc()).all()
 
-    if not orders:
-        return {"message": "No orders found for this user."}
-
     return [
         {
             "product": order.product_name,
             "quantity": order.quantity,
-            "dosage_frequency": order.dosage_frequency,
             "purchase_date": order.purchase_date
         }
         for order in orders
     ]
 
 
-# ===============================
+# =====================================================
 # 🔔 REFILL SYSTEM
-# ===============================
+# =====================================================
 @router.get("/admin/refill/{user_id}")
 def refill_alert(user_id: str, db: Session = Depends(get_db)):
     return predict_refill(db, user_id)
@@ -130,6 +168,7 @@ def scan_refills(db: Session = Depends(get_db)):
 
 @router.get("/admin/refill-alerts")
 def get_refill_alerts(db: Session = Depends(get_db)):
+
     alerts = db.query(RefillAlert).all()
 
     return [
@@ -142,11 +181,12 @@ def get_refill_alerts(db: Session = Depends(get_db)):
     ]
 
 
-# ===============================
+# =====================================================
 # 📦 INVENTORY SYSTEM
-# ===============================
+# =====================================================
 @router.get("/admin/inventory")
 def get_inventory(db: Session = Depends(get_db)):
+
     medicines = db.query(Medicine).all()
 
     return [
@@ -162,6 +202,7 @@ def get_inventory(db: Session = Depends(get_db)):
 
 @router.get("/admin/low-stock")
 def low_stock(threshold: int = 10, db: Session = Depends(get_db)):
+
     medicines = db.query(Medicine).filter(Medicine.stock <= threshold).all()
 
     return [
@@ -189,14 +230,13 @@ def debug_stock(product_name: str, db: Session = Depends(get_db)):
     }
 
 
-# ===============================
+# =====================================================
 # 📄 PRESCRIPTION UPLOAD
-# ===============================
+# =====================================================
 UPLOAD_DIR = "uploaded_prescriptions"
 
 if not os.path.exists(UPLOAD_DIR):
     os.makedirs(UPLOAD_DIR)
-
 
 @router.post("/upload-prescription/{user_id}/{medicine_name}")
 async def upload_prescription(
@@ -227,9 +267,9 @@ async def upload_prescription(
     }
 
 
-# ===============================
+# =====================================================
 # 🚚 WAREHOUSE WEBHOOK
-# ===============================
+# =====================================================
 @router.post("/webhook/warehouse")
 def warehouse_webhook(payload: dict):
     print("📦 Warehouse received order:", payload)

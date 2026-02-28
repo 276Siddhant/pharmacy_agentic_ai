@@ -51,101 +51,64 @@ def run_agent(db: Session, user_id: str, message: str):
 
     try:
         data = json.loads(completion.choices[0].message.content)
-        print("LLM OUTPUT:", data)
     except:
-        return {"error": "Could not understand order"}
+        return {"error": "Could not understand request"}
+
     intent = data.get("intent")
 
-# 🔵 SYMPTOM INTENT
+    # 🔵 SYMPTOM INTENT
     if intent == "recommend":
-        from .services import recommend_from_symptom  # we’ll create this next
-        symptom = data["symptom"]
+        from .services import recommend_from_symptom
+        symptom = data.get("symptom")
 
         recommendations = recommend_from_symptom(db, symptom)
 
         return {
-        "message": f"Based on your symptom '{symptom}', I recommend:",
-        "recommendations": recommendations,
-        "trace": [
-            "User message received",
-            f"LLM extracted symptom: {symptom}",
-            "Searching database for matching medicines"
-        ]
-    }
-    # 🟢 ORDER INTENT
-    elif intent == "order":
-        
-        medicine = data["medicine"]
-        quantity = data["quantity"]
-        dosage = data["dosage_frequency"]
-        medicine = data["medicine"]
-        quantity = data["quantity"]
-        dosage = data["dosage_frequency"]
-        
-
-    # 🔴 OVERDOSE CHECK
-    recent = check_recent_purchase(db, user_id, medicine)
-    if recent:
-        return {
-            "warning": "You recently purchased this medicine. Please confirm if this is intentional."
+            "message": f"Based on your symptom '{symptom}', I recommend:",
+            "recommendations": recommendations,
+            "trace": ["Symptom detected", "Fetching recommendations"]
         }
 
-    
+    # 🟢 ORDER INTENT (VALIDATION PHASE ONLY)
+    elif intent == "order":
 
+        medicine = data.get("medicine")
+        quantity = data.get("quantity", 1)
+        dosage = data.get("dosage_frequency", 1)
 
+        if not medicine:
+            return {"error": "Medicine not detected"}
 
-    # 🟢 STOCK CHECK
-    stock_check = check_stock(db, medicine, quantity)
-    if stock_check["status"] != "available":
-        return stock_check
+        # STOCK CHECK
+        stock_check = check_stock(db, medicine, quantity)
+        if stock_check["status"] != "available":
+            return {
+                "message": "❌ Medicine out of stock.",
+                "status": "out_of_stock"
+            }
 
-    # 🔴 PRESCRIPTION CHECK
-    prescription = check_prescription(db, medicine)
-    if prescription["prescription_required"]:
-        return {"status": "prescription_required"}
+        # PRESCRIPTION CHECK
+        prescription = check_prescription(db, medicine)
+        if prescription["prescription_required"]:
+            return {
+                "message": f"⚠️ {medicine} requires a prescription.",
+                "status": "prescription_required"
+            }
 
-    # 🟢 PLACE ORDER
-    result = place_order(db, user_id, medicine, quantity, dosage)
+        # RETURN READY TO CONFIRM (DO NOT PLACE ORDER)
+        return {
+            "message": (
+                f"✅ {medicine} is available.\n\n"
+                f"Quantity: {quantity}\n"
+                f"No prescription required.\n\n"
+                f"Click Confirm to place your order."
+            ),
+            "status": "ready_to_confirm",
+            "order_data": {
+                "medicine": medicine,
+                "quantity": quantity,
+                "dosage": dosage
+            }
+        }
 
-    # 🔥 PROACTIVE REFILL SUGGESTION
-    refill_alert = predict_refill(db, user_id)
-
-
-    if isinstance(refill_alert, list) and len(refill_alert) > 0:
-        result["proactive_suggestion"] = {
-        "medicine": refill_alert[0]["medicine"],
-        "expected_run_out": refill_alert[0]["expected_run_out"]
-    }
-
-    
-        
-    
-
-    response_message = f"✅ Your order for {result['product']} has been placed successfully."
-
-    if "proactive_suggestion" in result:
-        response_message += f"\n\n⚠️ You may also run out of {result['proactive_suggestion']['medicine']} soon. Would you like to reorder?"
-
-
-    trace = []
-    trace.append("User message received")
-    trace.append(f"LLM extracted: {data}")
-    trace.append("Checking stock")
-    trace.append("Checking prescription")
-    trace.append("Placing order")
-
-    return {
-    "message": response_message,
-    "data": result,
-    "trace": trace
-}
-
-
-    
-
-
-
-
-
-
-
+    return {"error": "Unknown intent"}

@@ -202,6 +202,27 @@ def call_final_streamed(text: str):
 # 🎙️ VOICE TRANSCRIPTION
 # ══════════════════════════════════════════════════════════════════════════════
 
+
+BACKEND_URL = "http://127.0.0.1:8000"
+
+def call_finalize_checkout(patient_id, items):
+
+    try:
+        response = requests.post(
+            f"{BACKEND_URL}/finalize-checkout",
+            json={
+                "patient_id": patient_id,
+                "items": items
+            }
+        )
+
+        if response.status_code == 200:
+            return response.json()
+        else:
+            return {"status": "error", "message": response.json().get("detail")}
+    except:
+        return {"status": "error", "message": "Backend unreachable"}
+
 def call_transcribe(audio_bytes: bytes) -> str:
     """
     Sends audio bytes to the backend for transcription.
@@ -231,7 +252,17 @@ def call_transcribe(audio_bytes: bytes) -> str:
     # 🔌 SWAP THIS — delete this line and uncomment the block above
     return "I have a headache and mild fever. What can I take?"
 
+import requests
 
+BASE_URL = "http://127.0.0.1:8000"
+
+def call_finalize_checkout(user_id, order_data):
+    response = requests.post(
+        f"{BASE_URL}/finalize-checkout",
+        params={"user_id": user_id},
+        json=order_data
+    )
+    return response.json()
 # ══════════════════════════════════════════════════════════════════════════════
 # 📊 REFILL CHECK
 # ══════════════════════════════════════════════════════════════════════════════
